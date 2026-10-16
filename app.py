@@ -3,16 +3,13 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import os
 from datetime import datetime
 import sqlite3
-from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify
-from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'chainwealth_secret_key_2026_secure')
 
-# Use /tmp on Render (writable); fall back to local file for local development
-DB_PATH = os.environ.get('DATABASE_PATH', '/tmp/chainwealth.db' if os.environ.get('RENDER') else os.path.join(os.path.dirname(__file__), 'chainwealth.db'))
+# Writable path on Render free tier
+DB_PATH = '/tmp/chainwealth.db' if os.environ.get('RENDER') else os.path.join(os.path.dirname(__file__), 'chainwealth.db')
 
-# Mock crypto prices (USD)
 CRYPTO_PRICES = {
     'BTC': 67500.00,
     'ETH': 2650.00,
@@ -60,7 +57,6 @@ def init_db():
             created_at TEXT,
             FOREIGN KEY(user_id) REFERENCES users(id)
         )''')
-        # Create default admin if not exists
         c.execute("SELECT * FROM users WHERE username = 'admin'")
         if not c.fetchone():
             admin_pass = generate_password_hash('ChainWealth@Admin2026')
@@ -68,67 +64,9 @@ def init_db():
                       ('admin', 'admin@chainwealthcapital.com', admin_pass, 0.0, 1, datetime.now().isoformat()))
         conn.commit()
         conn.close()
-        print("Database initialized successfully")
+        print("Database ready")
     except Exception as e:
-        print(f"Database init error: {e}")
-
-init_db()
-
-# Mock crypto prices (USD)
-CRYPTO_PRICES = {
-    'BTC': 67500.00,
-    'ETH': 2650.00,
-    'SOL': 145.00,
-    'BNB': 580.00,
-    'XRP': 0.55,
-    'ADA': 0.38,
-    'DOGE': 0.12,
-    'DOT': 4.20
-}
-
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-def init_db():
-    conn = get_db()
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        email TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL,
-        balance REAL DEFAULT 0.0,
-        is_admin INTEGER DEFAULT 0,
-        created_at TEXT
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS deposits (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        amount REAL,
-        status TEXT DEFAULT 'pending',
-        created_at TEXT,
-        FOREIGN KEY(user_id) REFERENCES users(id)
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS investments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        asset TEXT,
-        usd_amount REAL,
-        quantity REAL,
-        price_at_purchase REAL,
-        created_at TEXT,
-        FOREIGN KEY(user_id) REFERENCES users(id)
-    )''')
-    # Create default admin if not exists
-    c.execute("SELECT * FROM users WHERE username = 'admin'")
-    if not c.fetchone():
-        admin_pass = generate_password_hash('ChainWealth@Admin2026')
-        c.execute("INSERT INTO users (username, email, password, balance, is_admin, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                  ('admin', 'admin@chainwealthcapital.com', admin_pass, 0.0, 1, datetime.now().isoformat()))
-    conn.commit()
-    conn.close()
+        print(f"DB error: {e}")
 
 init_db()
 
@@ -191,7 +129,6 @@ def dashboard():
     investments = conn.execute("SELECT * FROM investments WHERE user_id = ? ORDER BY created_at DESC", (session['user_id'],)).fetchall()
     deposits = conn.execute("SELECT * FROM deposits WHERE user_id = ? ORDER BY created_at DESC", (session['user_id'],)).fetchall()
     conn.close()
-    # Calculate portfolio value
     portfolio = {}
     total_invested = 0
     for inv in investments:
@@ -201,9 +138,7 @@ def dashboard():
         portfolio[asset]['quantity'] += inv['quantity']
         portfolio[asset]['invested'] += inv['usd_amount']
         total_invested += inv['usd_amount']
-    current_value = 0
-    for asset, data in portfolio.items():
-        current_value += data['quantity'] * CRYPTO_PRICES.get(asset, 0)
+    current_value = sum(data['quantity'] * CRYPTO_PRICES.get(asset, 0) for asset, data in portfolio.items())
     return render_template('dashboard.html', user=user, investments=investments, deposits=deposits,
                            portfolio=portfolio, prices=CRYPTO_PRICES, total_invested=total_invested, current_value=current_value)
 
@@ -219,7 +154,7 @@ def invest():
     user = conn.execute("SELECT balance FROM users WHERE id = ?", (session['user_id'],)).fetchone()
     if user['balance'] < usd_amount:
         conn.close()
-        return jsonify({'error': 'Insufficient balance. Request deposit and wait for admin approval.'}), 400
+        return jsonify({'error': 'Insufficient balance'}), 400
     price = CRYPTO_PRICES[asset]
     quantity = usd_amount / price
     conn.execute("UPDATE users SET balance = balance - ? WHERE id = ?", (usd_amount, session['user_id']))
@@ -241,7 +176,7 @@ def request_deposit():
                  (session['user_id'], amount, datetime.now().isoformat()))
     conn.commit()
     conn.close()
-    return jsonify({'success': True, 'message': 'Deposit request submitted. Admin will activate your balance.'})
+    return jsonify({'success': True, 'message': 'Deposit request submitted'})
 
 @app.route('/admin')
 def admin():
@@ -262,7 +197,7 @@ def activate_balance():
         return jsonify({'error': 'Unauthorized'}), 403
     user_id = request.form.get('user_id')
     amount = float(request.form.get('amount', 0))
-    action = request.form.get('action')  # 'add' or 'set'
+    action = request.form.get('action')
     if not user_id or amount < 0:
         return jsonify({'error': 'Invalid'}), 400
     conn = get_db()
@@ -288,7 +223,7 @@ def approve_deposit():
     conn.execute("UPDATE users SET balance = balance + ? WHERE id = ?", (dep['amount'], dep['user_id']))
     conn.commit()
     conn.close()
-    return jsonify({'success': True, 'message': 'Deposit approved and balance activated'})
+    return jsonify({'success': True, 'message': 'Deposit approved'})
 
 @app.route('/admin/reject_deposit', methods=['POST'])
 def reject_deposit():
